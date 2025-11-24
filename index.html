@@ -1,0 +1,711 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, Edit3, Plus, Trash2, CheckCircle, ChevronRight, Settings, RefreshCw, Filter, Users, GitBranch, MessageCircle, ArrowLeft, RotateCcw, Dice5, HelpCircle, Eye, Bot, MessageSquare, Wrench } from 'lucide-react';
+
+// --- Types ---
+type NodeType = 'question' | 'result';
+type ShapeType = 'circle' | 'triangle' | 'square';
+type ColorType = 'red' | 'blue' | 'yellow';
+type AppMode = 'home' | 'builder' | 'solver';
+
+interface Rule {
+  key: 'shape' | 'color';
+  value: ShapeType | ColorType;
+}
+
+interface Node {
+  id: string;
+  type: NodeType;
+  text: string;
+  yesId?: string;
+  noId?: string;
+  parentId?: string;
+  rule?: Rule;
+}
+
+interface NodeMap {
+  [key: string]: Node;
+}
+
+interface ShapeItem {
+  id: number;
+  shape: ShapeType;
+  color: ColorType;
+  name: string;
+}
+
+// --- Data Generation Helper ---
+const generateRandomShapes = (): ShapeItem[] => {
+  const shapes: ShapeType[] = ['circle', 'triangle', 'square'];
+  const colors: ColorType[] = ['red', 'blue', 'yellow'];
+  let items: ShapeItem[] = [];
+  let idCounter = 1;
+
+  shapes.forEach(shape => {
+    colors.forEach(color => {
+      const count = Math.floor(Math.random() * 6); 
+      for (let i = 0; i < count; i++) {
+        const colorName = color === 'red' ? '빨간색' : color === 'blue' ? '파란색' : '노란색';
+        const shapeName = shape === 'circle' ? '원' : shape === 'triangle' ? '삼각형' : '사각형';
+        items.push({
+          id: idCounter++,
+          shape,
+          color,
+          name: `${colorName} ${shapeName}`
+        });
+      }
+    });
+  });
+
+  if (items.length < 3) return generateRandomShapes();
+  return items.sort(() => Math.random() - 0.5); 
+};
+
+// --- Updated Initial Nodes (Fully Expanded) ---
+const INITIAL_NODES: NodeMap = {
+  'root': { id: 'root', type: 'question', text: '모양이 동그란가요?', yesId: 'n_circle', noId: 'n_not_circle', rule: { key: 'shape', value: 'circle' } },
+  
+  // 1. Circle Branch
+  'n_circle': { id: 'n_circle', type: 'question', text: '색깔이 빨간색인가요?', parentId: 'root', yesId: 'res_red_circle', noId: 'n_circle_blue', rule: { key: 'color', value: 'red' } },
+  'res_red_circle': { id: 'res_red_circle', type: 'result', text: '빨간색 원', parentId: 'n_circle' },
+  'n_circle_blue': { id: 'n_circle_blue', type: 'question', text: '색깔이 파란색인가요?', parentId: 'n_circle', yesId: 'res_blue_circle', noId: 'res_yellow_circle', rule: { key: 'color', value: 'blue' } },
+  'res_blue_circle': { id: 'res_blue_circle', type: 'result', text: '파란색 원', parentId: 'n_circle_blue' },
+  'res_yellow_circle': { id: 'res_yellow_circle', type: 'result', text: '노란색 원', parentId: 'n_circle_blue' },
+  
+  // 2. Not Circle Branch
+  'n_not_circle': { id: 'n_not_circle', type: 'question', text: '모양이 뾰족한가요? (삼각형)', parentId: 'root', yesId: 'n_tri', noId: 'n_square', rule: { key: 'shape', value: 'triangle' } },
+  
+  // 3. Triangle Branch
+  'n_tri': { id: 'n_tri', type: 'question', text: '색깔이 노란색인가요?', parentId: 'n_not_circle', yesId: 'res_yellow_tri', noId: 'n_tri_red', rule: { key: 'color', value: 'yellow' } },
+  'res_yellow_tri': { id: 'res_yellow_tri', type: 'result', text: '노란색 삼각형', parentId: 'n_tri' },
+  'n_tri_red': { id: 'n_tri_red', type: 'question', text: '색깔이 빨간색인가요?', parentId: 'n_tri', yesId: 'res_red_tri', noId: 'res_blue_tri', rule: { key: 'color', value: 'red' } },
+  'res_red_tri': { id: 'res_red_tri', type: 'result', text: '빨간색 삼각형', parentId: 'n_tri_red' },
+  'res_blue_tri': { id: 'res_blue_tri', type: 'result', text: '파란색 삼각형', parentId: 'n_tri_red' },
+
+  // 4. Square Branch (Expanded) - 이전에는 여기서 끝났으나 이제 색깔을 물어봄
+  'n_square': { 
+    id: 'n_square', type: 'question', text: '색깔이 빨간색인가요?', parentId: 'n_not_circle', 
+    yesId: 'res_red_square', noId: 'n_square_blue', 
+    rule: { key: 'color', value: 'red' } 
+  },
+  'res_red_square': { id: 'res_red_square', type: 'result', text: '빨간색 사각형', parentId: 'n_square' },
+  
+  'n_square_blue': { 
+    id: 'n_square_blue', type: 'question', text: '색깔이 파란색인가요?', parentId: 'n_square', 
+    yesId: 'res_blue_square', noId: 'res_yellow_square', 
+    rule: { key: 'color', value: 'blue' } 
+  },
+  'res_blue_square': { id: 'res_blue_square', type: 'result', text: '파란색 사각형', parentId: 'n_square_blue' },
+  'res_yellow_square': { id: 'res_yellow_square', type: 'result', text: '노란색 사각형', parentId: 'n_square_blue' },
+};
+
+// --- Utilities ---
+const getShapesAtNode = (nodeId: string, nodes: NodeMap, allShapes: ShapeItem[]): ShapeItem[] => {
+  if (nodeId === 'root') return allShapes;
+  const node = nodes[nodeId];
+  if (!node.parentId) return []; 
+  const parentShapes = getShapesAtNode(node.parentId, nodes, allShapes);
+  const parentNode = nodes[node.parentId];
+  if (parentNode.type === 'question' && parentNode.rule) {
+    const isYesPath = parentNode.yesId === nodeId;
+    return parentShapes.filter(shape => {
+      // @ts-ignore
+      const shapeVal = shape[parentNode.rule!.key];
+      const ruleVal = parentNode.rule!.value;
+      return isYesPath ? shapeVal === ruleVal : shapeVal !== ruleVal;
+    });
+  }
+  return parentShapes;
+};
+
+export default function DecisionTreeApp() {
+  const [nodes, setNodes] = useState<NodeMap>(INITIAL_NODES);
+  const [appMode, setAppMode] = useState<AppMode>('home');
+  const [shapeData, setShapeData] = useState<ShapeItem[]>([]);
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  // Solver/Game State
+  const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
+  const [path, setPath] = useState<string[]>([]);
+  const [targetShape, setTargetShape] = useState<ShapeItem | null>(null);
+  const [isRevealed, setIsRevealed] = useState(false);
+  const [computerThinking, setComputerThinking] = useState(false);
+  const [computerAnswer, setComputerAnswer] = useState<'yes' | 'no' | null>(null);
+
+  // Builder State
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setShapeData(generateRandomShapes());
+  }, []);
+
+  // --- Data Actions ---
+  const refreshData = () => {
+    setIsAnimating(true);
+    setTimeout(() => setIsAnimating(false), 500);
+    const newData = generateRandomShapes();
+    setShapeData(newData);
+    if (appMode === 'solver') {
+      resetSolver(newData);
+    }
+  };
+
+  // --- Navigation Actions ---
+  const goHome = () => {
+    setAppMode('home');
+    resetGame();
+  };
+
+  const startBuilder = () => {
+    setAppMode('builder');
+  };
+
+  const startSolver = () => {
+    setAppMode('solver');
+    resetSolver(shapeData); 
+  };
+
+  const switchToBuilder = (nodeId: string) => {
+    setAppMode('builder');
+    setSelectedNodeId(nodeId);
+  };
+
+  const resetGame = () => {
+    setCurrentNodeId(null);
+    setPath([]);
+    setIsRevealed(false);
+    setTargetShape(null);
+    setSelectedNodeId(null);
+    setComputerAnswer(null);
+    setComputerThinking(false);
+  };
+
+  const resetSolver = (data: ShapeItem[]) => {
+    setCurrentNodeId('root');
+    setPath(['root']);
+    setIsRevealed(false);
+    setComputerAnswer(null);
+    setComputerThinking(false);
+    
+    if (data.length > 0) {
+      const random = data[Math.floor(Math.random() * data.length)];
+      setTargetShape(random);
+    }
+  };
+
+  // --- Solver Logic: User asks, Computer answers ---
+  const handleAskComputer = () => {
+    if (!currentNodeId || !targetShape) return;
+    const node = nodes[currentNodeId];
+    if (node.type !== 'question' || !node.rule) return;
+
+    setComputerThinking(true);
+
+    setTimeout(() => {
+      const shapeVal = targetShape[node.rule!.key];
+      const ruleVal = node.rule!.value;
+      const isMatch = shapeVal === ruleVal;
+      const answer = isMatch ? 'yes' : 'no';
+      const nextId = isMatch ? node.yesId : node.noId;
+
+      setComputerThinking(false);
+      setComputerAnswer(answer);
+
+      setTimeout(() => {
+        if (nextId && nodes[nextId]) {
+          setCurrentNodeId(nextId);
+          setPath(prev => [...prev, nextId]);
+          setComputerAnswer(null);
+        }
+      }, 1500);
+
+    }, 800);
+  };
+
+  // --- Builder Actions ---
+  const updateNodeText = (id: string, text: string) => {
+    setNodes(prev => ({ ...prev, [id]: { ...prev[id], text } }));
+  };
+
+  const updateNodeRule = (id: string, key: 'shape' | 'color', value: string) => {
+    const shapeNames: Record<string, string> = { circle: '원형', triangle: '삼각형', square: '사각형' };
+    const colorNames: Record<string, string> = { red: '빨간색', blue: '파란색', yellow: '노란색' };
+
+    let newText = "";
+    if (key === 'shape') {
+       newText = `모양이 ${shapeNames[value] || value}인가요?`;
+    } else {
+       newText = `색깔이 ${colorNames[value] || value}인가요?`;
+    }
+
+    setNodes(prev => ({
+      ...prev,
+      [id]: { 
+          ...prev[id], 
+          text: newText,
+          rule: { key, value: value as any } 
+      }
+    }));
+  };
+
+  const addBranch = (parentId: string) => {
+    const parent = nodes[parentId];
+    if (parent.type === 'result') {
+      const newYesId = `n${Date.now()}_y`;
+      const newNoId = `n${Date.now()}_n`;
+      const newYesNode: Node = { id: newYesId, type: 'result', text: '결과 A', parentId };
+      const newNoNode: Node = { id: newNoId, type: 'result', text: '결과 B', parentId };
+      setNodes(prev => ({
+        ...prev,
+        [parentId]: { 
+          ...prev[parentId], type: 'question', text: '모양이 동그란가요?', 
+          yesId: newYesId, noId: newNoId, rule: { key: 'shape', value: 'circle' } 
+        },
+        [newYesId]: newYesNode,
+        [newNoId]: newNoNode
+      }));
+    }
+  };
+
+  const deleteChildren = (nodeId: string) => {
+     setNodes(prev => {
+       const node = prev[nodeId];
+       return {
+         ...prev,
+         [nodeId]: { ...node, type: 'result', yesId: undefined, noId: undefined, rule: undefined }
+       };
+     });
+  };
+
+  // --- Helper Components ---
+  const ShapeIcon = ({ item, size = 16 }: { item: ShapeItem, size?: number }) => {
+    const colorMap = { red: '#ef4444', blue: '#3b82f6', yellow: '#eab308' };
+    const fill = colorMap[item.color];
+    let shapeEl = null;
+    if (item.shape === 'circle') shapeEl = <circle cx="50" cy="50" r="45" fill={fill} />;
+    else if (item.shape === 'square') shapeEl = <rect x="10" y="10" width="80" height="80" fill={fill} />;
+    else if (item.shape === 'triangle') shapeEl = <polygon points="50,5 95,90 5,90" fill={fill} />;
+    return <svg width={size} height={size} viewBox="0 0 100 100" className="inline-block drop-shadow-sm transition-all duration-500">{shapeEl}</svg>;
+  };
+
+  // --- Tree Node Component ---
+  const TreeNode = ({ nodeId }: { nodeId: string }) => {
+    const node = nodes[nodeId];
+    if (!node) return null;
+
+    const isSelected = selectedNodeId === nodeId;
+    const isCurrent = currentNodeId === nodeId;
+    const isInPath = path.includes(nodeId);
+    const isResult = node.type === 'result';
+
+    const shapesAtNode = getShapesAtNode(nodeId, nodes, shapeData);
+    const isPure = shapesAtNode.length > 0 && shapesAtNode.every(s => s.name === shapesAtNode[0].name);
+
+    let bubbleClass = "flex flex-col items-center p-3 rounded-xl border-2 transition-all duration-300 cursor-pointer min-w-[140px] max-w-[180px] bg-white ";
+    
+    if (appMode === 'solver') {
+        if (isCurrent) bubbleClass += "border-blue-600 text-blue-900 shadow-xl ring-4 ring-blue-100 scale-105 z-20 ";
+        else if (isInPath) bubbleClass += "border-blue-300 text-blue-800 bg-blue-50 ";
+        else bubbleClass += "border-slate-200 text-slate-400 opacity-50 ";
+    } else if (appMode === 'builder') {
+        if (isSelected) bubbleClass += "border-indigo-500 text-indigo-900 shadow-md ring-2 ring-indigo-100 ";
+        else bubbleClass += "border-slate-200 text-slate-700 hover:border-indigo-300 ";
+    }
+
+    return (
+      <div className="relative flex flex-col items-center z-10">
+        <div 
+          className={bubbleClass}
+          onClick={(e) => { 
+            e.stopPropagation(); 
+            if (appMode === 'builder') setSelectedNodeId(nodeId); 
+          }}
+        >
+          <div className="text-[10px] font-bold mb-1 flex items-center gap-1 opacity-70 uppercase tracking-wider">
+             {isResult ? 'Result' : 'Question'}
+          </div>
+          
+          <div className="text-center font-medium text-sm leading-tight mb-2 break-keep">
+            {node.text}
+          </div>
+
+          {appMode === 'builder' ? (
+            <div className="w-full pt-2 border-t border-slate-100 mt-1">
+               <div className={`flex flex-wrap gap-1 justify-center max-w-[120px] transition-opacity duration-500 ${isAnimating ? 'opacity-50' : 'opacity-100'}`}>
+                 {shapesAtNode.map(s => (
+                   <div key={s.id} className="rounded-full transition-transform hover:scale-150">
+                     <ShapeIcon item={s} size={10} />
+                   </div>
+                 ))}
+                 {shapesAtNode.length === 0 && <span className="text-[10px] text-slate-300">-</span>}
+               </div>
+               <div className="text-[10px] text-slate-400 mt-1 text-center flex justify-center items-center gap-1">
+                  {shapesAtNode.length} items 
+                  {isResult && isPure && <CheckCircle size={10} className="text-green-500"/>}
+               </div>
+            </div>
+          ) : (
+            <div className="w-full pt-2 border-t border-slate-100 mt-1">
+                {isResult && isRevealed && isCurrent ? (
+                   <div className="flex flex-wrap gap-1 justify-center max-w-[120px] animate-pulse">
+                     {shapesAtNode.map(s => (
+                        <ShapeIcon key={s.id} item={s} size={12} />
+                     ))}
+                     {shapesAtNode.length === 0 && <span className="text-xs text-slate-400">없음</span>}
+                   </div>
+                ) : (
+                   <div className="flex justify-center items-center gap-1 text-xs font-bold text-slate-400">
+                      <HelpCircle size={12} />
+                      <span>{shapesAtNode.length} candidates</span>
+                   </div>
+                )}
+            </div>
+          )}
+        </div>
+
+        {node.yesId && node.noId && (
+          <div className="flex items-start mt-8 relative">
+            <div className="absolute top-[-2rem] left-1/2 -translate-x-1/2 w-px h-8 bg-slate-300"></div>
+            <div className="absolute top-0 left-1/4 right-1/4 h-px bg-slate-300"></div>
+            
+            {/* YES BRANCH */}
+            <div className="flex flex-col items-center px-4 relative">
+              <div className={`absolute top-[-0.75rem] left-1/2 -translate-x-1/2 text-[10px] font-bold px-2 py-0.5 rounded-full border bg-white z-20 transition-all duration-300
+                  ${appMode === 'solver' && path.includes(node.yesId) && path.includes(nodeId) ? "text-green-600 border-green-200 bg-green-50 scale-110" : "text-slate-400 border-slate-200"}
+                  ${appMode === 'solver' && isCurrent && computerAnswer === 'yes' ? "ring-4 ring-green-200 scale-125 border-green-600 text-green-700" : ""}
+              `}>
+                Yes
+              </div>
+              <div className="w-px h-8 bg-slate-300"></div>
+              <TreeNode nodeId={node.yesId} />
+            </div>
+
+            {/* NO BRANCH */}
+            <div className="flex flex-col items-center px-4 relative">
+              <div className={`absolute top-[-0.75rem] left-1/2 -translate-x-1/2 text-[10px] font-bold px-2 py-0.5 rounded-full border bg-white z-20 transition-all duration-300
+                  ${appMode === 'solver' && path.includes(node.noId) && path.includes(nodeId) ? "text-red-600 border-red-200 bg-red-50 scale-110" : "text-slate-400 border-slate-200"}
+                  ${appMode === 'solver' && isCurrent && computerAnswer === 'no' ? "ring-4 ring-red-200 scale-125 border-red-600 text-red-700" : ""}
+              `}>
+                No
+              </div>
+              <div className="w-px h-8 bg-slate-300"></div>
+              <TreeNode nodeId={node.noId} />
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // --- Main Render ---
+
+  if (appMode === 'home') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans text-slate-900">
+        <h1 className="text-3xl font-bold text-slate-800 mb-2">의사결정 트리 시뮬레이터</h1>
+        <p className="text-slate-500 mb-8 text-center max-w-md">데이터를 분류하는 논리를 직접 만들거나, <br/> 컴퓨터의 비밀 정체를 질문을 통해 밝혀보세요.</p>
+        
+        <div className="flex gap-4 mb-12">
+            <button onClick={refreshData} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-full hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 text-slate-600 text-sm font-bold transition shadow-sm group">
+                <Dice5 size={18} className={`transition-transform group-hover:rotate-180 ${isAnimating ? 'animate-spin' : ''}`} /> 
+                데이터 랜덤 셔플 (현재 {shapeData.length}개)
+            </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl">
+          <button onClick={startBuilder} className="group bg-white p-8 rounded-2xl shadow-sm border border-slate-200 hover:border-indigo-500 hover:shadow-xl hover:shadow-indigo-100 transition-all text-left flex flex-col items-start">
+            <div className="bg-indigo-100 p-4 rounded-xl mb-4 group-hover:scale-110 transition-transform">
+              <GitBranch size={32} className="text-indigo-600" />
+            </div>
+            <h2 className="text-xl font-bold text-slate-800 mb-2">질문 만들기 (Builder)</h2>
+            <p className="text-sm text-slate-500">랜덤하게 생성된 <strong>{shapeData.length}개</strong>의 도형이 완벽하게 분류되도록 질문 트리를 설계합니다. 논리를 완성하세요.</p>
+          </button>
+
+          <button onClick={startSolver} className="group bg-white p-8 rounded-2xl shadow-sm border border-slate-200 hover:border-blue-500 hover:shadow-xl hover:shadow-blue-100 transition-all text-left flex flex-col items-start">
+            <div className="bg-blue-100 p-4 rounded-xl mb-4 group-hover:scale-110 transition-transform">
+              <Bot size={32} className="text-blue-600" />
+            </div>
+            <h2 className="text-xl font-bold text-slate-800 mb-2">정체 맞추기 (Solver)</h2>
+            <p className="text-sm text-slate-500">컴퓨터가 비밀리에 도형 하나를 선택합니다. 컴퓨터에게 질문을 던져 그 정체가 무엇인지 추리해보세요.</p>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex flex-col">
+      {/* Header */}
+      <header className={`px-6 py-3 border-b flex items-center justify-between sticky top-0 z-50 shadow-sm ${appMode === 'builder' ? 'bg-indigo-600 border-indigo-700 text-white' : 'bg-white border-slate-200 text-slate-800'}`}>
+        <div className="flex items-center gap-3">
+          <button onClick={goHome} className={`p-2 rounded-lg transition ${appMode === 'builder' ? 'hover:bg-indigo-500 text-white' : 'hover:bg-slate-100 text-slate-600'}`}>
+            <ArrowLeft size={20} />
+          </button>
+          <div>
+            <h1 className="text-lg font-bold flex items-center gap-2">
+              {appMode === 'builder' ? <GitBranch size={18}/> : <Bot size={18}/>}
+              {appMode === 'builder' ? '질문 생성기 (Builder)' : '컴퓨터 정체 맞추기'}
+            </h1>
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
+             <button 
+                onClick={refreshData}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition active:scale-95
+                    ${appMode === 'builder' ? 'bg-indigo-700 hover:bg-indigo-500 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}
+                `}
+             >
+                 <RotateCcw size={12} className={isAnimating ? 'animate-spin' : ''} /> 데이터 셔플
+             </button>
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-hidden flex">
+        <aside className="w-80 bg-white border-r border-slate-200 flex flex-col z-40 shadow-xl">
+          
+          {/* --- SOLVER SIDEBAR --- */}
+          {appMode === 'solver' && (
+            <div className="flex-1 flex flex-col">
+               <div className="p-6 bg-slate-800 text-white border-b border-slate-700 text-center relative overflow-hidden">
+                 <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 relative z-10">Computer's Secret</div>
+                 <div className="inline-flex flex-col items-center justify-center w-24 h-24 rounded-2xl bg-slate-700 border border-slate-600 mb-2 relative z-10">
+                    <Bot size={48} className="text-slate-400" />
+                    <span className="text-xs font-bold text-slate-300 mt-2">Secret</span>
+                 </div>
+                 <div className="absolute top-0 left-0 w-full h-full bg-blue-900 opacity-20 animate-pulse"></div>
+               </div>
+
+               <div className="flex-1 p-6 overflow-y-auto bg-slate-50">
+                 {currentNodeId && nodes[currentNodeId] ? (
+                   <div className="animate-fade-in">
+                     <div className="flex justify-between items-center mb-2">
+                        <div className="text-sm font-bold text-slate-400">현재 질문</div>
+                        <button 
+                           onClick={() => switchToBuilder(currentNodeId)} 
+                           className="text-xs flex items-center gap-1 text-blue-600 hover:underline"
+                           title="이 질문의 내용이나 규칙이 이상한가요? 수정하러 가기"
+                        >
+                           <Wrench size={10}/> 질문 수정
+                        </button>
+                     </div>
+                     
+                     <div className="text-xl font-bold text-slate-800 mb-6 leading-snug bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                       {nodes[currentNodeId].text}
+                     </div>
+
+                     {nodes[currentNodeId].type === 'question' ? (
+                       <div className="space-y-4">
+                         {!computerThinking && !computerAnswer ? (
+                            <button 
+                                onClick={handleAskComputer}
+                                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg shadow-blue-200 transition transform active:scale-95 flex items-center justify-center gap-2"
+                            >
+                                <MessageSquare size={20} />
+                                컴퓨터에게 질문하기
+                            </button>
+                         ) : (
+                            <div className="w-full py-4 bg-white border-2 border-blue-100 rounded-xl flex flex-col items-center justify-center h-[120px]">
+                                {computerThinking ? (
+                                    <div className="flex flex-col items-center gap-2">
+                                        <div className="flex gap-1">
+                                            <span className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" style={{animationDelay: '0s'}}></span>
+                                            <span className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></span>
+                                            <span className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></span>
+                                        </div>
+                                        <span className="text-xs font-bold text-blue-600">생각 중...</span>
+                                    </div>
+                                ) : (
+                                    <div className={`text-2xl font-black animate-bounce ${computerAnswer === 'yes' ? 'text-green-600' : 'text-red-500'}`}>
+                                        {computerAnswer === 'yes' ? "네! (Yes)" : "아니오! (No)"}
+                                    </div>
+                                )}
+                            </div>
+                         )}
+                         
+                         <div className="text-center text-xs text-slate-400 mt-2">
+                            컴퓨터가 비밀 도형에 맞춰 대답합니다.
+                         </div>
+                       </div>
+                     ) : (
+                       <div className="text-center p-6 bg-indigo-50 rounded-xl border border-indigo-100 animate-fade-in">
+                         <CheckCircle className="mx-auto text-indigo-500 mb-3" size={32} />
+                         <div className="text-indigo-900 font-bold text-lg mb-2">분류가 끝났습니다!</div>
+                         
+                         {!isRevealed ? (
+                            <button 
+                                onClick={() => setIsRevealed(true)}
+                                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold transition shadow-md flex items-center justify-center gap-2"
+                            >
+                                <Eye size={18} /> 정체 확인 (공개)
+                            </button>
+                         ) : (
+                             <div className="mt-4 bg-white p-4 rounded-lg border border-indigo-100 animate-fade-in shadow-inner">
+                                <div className="flex items-center justify-center gap-4 mb-4">
+                                    <div className="flex flex-col items-center">
+                                        <span className="text-[10px] font-bold text-slate-400 mb-1">Tree Result</span>
+                                        <div className="p-2 bg-slate-100 rounded text-xs font-bold">{nodes[currentNodeId].text}</div>
+                                    </div>
+                                    <div className="text-xl font-bold text-slate-300">vs</div>
+                                    <div className="flex flex-col items-center">
+                                        <span className="text-[10px] font-bold text-blue-500 mb-1">Secret</span>
+                                        {targetShape && <ShapeIcon item={targetShape} size={32} />}
+                                    </div>
+                                </div>
+                                
+                                {targetShape && nodes[currentNodeId].text.includes(targetShape.name.split(' ')[1]) ? ( 
+                                     <div className="text-center text-green-600 font-bold text-sm mb-3">정답입니다! 완벽한 추리네요! 🎉</div>
+                                ) : (
+                                     <div className="text-center text-slate-600 font-bold text-sm mb-3">
+                                         {`실제 정체는 '${targetShape?.name}'였습니다!`}
+                                     </div>
+                                )}
+
+                                <button onClick={() => resetSolver(shapeData)} className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-bold">
+                                    새로운 게임 시작
+                                </button>
+                             </div>
+                         )}
+                       </div>
+                     )}
+                   </div>
+                 ) : null}
+               </div>
+            </div>
+          )}
+
+          {/* --- BUILDER SIDEBAR --- */}
+          {appMode === 'builder' && (
+            <div className="flex-1 flex flex-col">
+              <div className="p-4 border-b border-slate-100 bg-slate-50">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-slate-600 flex items-center gap-2">
+                    <Settings size={16}/> 편집 패널
+                  </h2>
+                  <button 
+                    onClick={refreshData} 
+                    className="flex items-center gap-1.5 px-2 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 transition shadow-sm active:scale-95"
+                  >
+                    <RotateCcw size={11} className={isAnimating ? 'animate-spin' : ''} />
+                    데이터 셔플
+                  </button>
+                </div>
+              </div>
+              
+              <div className="flex-1 p-4 overflow-y-auto">
+                {selectedNodeId && nodes[selectedNodeId] ? (
+                  <div className="space-y-6 animate-fade-in">
+                    
+                    {/* Question Type / Rule Editing */}
+                    {nodes[selectedNodeId].type === 'question' && (
+                      <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100 shadow-sm">
+                        <label className="block text-xs font-bold text-indigo-800 mb-3 flex items-center gap-1">
+                          <Filter size={12}/> 분류 규칙 (Yes 조건)
+                        </label>
+                        <div className="space-y-3">
+                          <div className="flex flex-col gap-1">
+                             <span className="text-[10px] text-indigo-500 font-semibold">기준 (Criteria)</span>
+                             <select 
+                                className="w-full p-2.5 text-sm border border-indigo-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                                value={nodes[selectedNodeId].rule?.key || 'shape'}
+                                onChange={(e) => updateNodeRule(selectedNodeId, e.target.value as any, nodes[selectedNodeId].rule?.value || 'circle')}
+                              >
+                                <option value="shape">모양 (Shape)</option>
+                                <option value="color">색깔 (Color)</option>
+                              </select>
+                          </div>
+                          
+                          <div className="flex flex-col gap-1">
+                             <span className="text-[10px] text-indigo-500 font-semibold">값 (Value)</span>
+                             <select 
+                                className="w-full p-2.5 text-sm border border-indigo-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                                value={nodes[selectedNodeId].rule?.value || ''}
+                                onChange={(e) => updateNodeRule(selectedNodeId, nodes[selectedNodeId].rule?.key || 'shape', e.target.value)}
+                              >
+                                {nodes[selectedNodeId].rule?.key === 'shape' ? (
+                                  <>
+                                    <option value="circle">원형</option>
+                                    <option value="triangle">삼각형</option>
+                                    <option value="square">사각형</option>
+                                  </>
+                                ) : (
+                                  <>
+                                    <option value="red">빨강</option>
+                                    <option value="blue">파랑</option>
+                                    <option value="yellow">노랑</option>
+                                  </>
+                                )}
+                              </select>
+                          </div>
+                          <div className="text-[10px] text-indigo-600 bg-indigo-100/50 p-2 rounded">
+                             * 규칙을 변경하면 질문 텍스트가 자동으로 업데이트됩니다.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Text Editing */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 mb-1">질문/결과 텍스트 수정</label>
+                      <input 
+                        type="text" 
+                        value={nodes[selectedNodeId].text} 
+                        onChange={(e) => updateNodeText(selectedNodeId, e.target.value)} 
+                        className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-medium shadow-sm"
+                        placeholder="질문 내용을 입력하세요"
+                      />
+                    </div>
+
+                    {/* Structure Editing */}
+                    <div className="pt-4 border-t border-slate-100 flex gap-2">
+                      {nodes[selectedNodeId].type === 'result' ? (
+                        <button onClick={() => addBranch(selectedNodeId)} className="flex-1 bg-white border border-indigo-600 text-indigo-600 py-2.5 rounded-lg text-sm font-bold hover:bg-indigo-50 transition shadow-sm flex items-center justify-center gap-1">
+                          <Plus size={16}/> 하위 질문 추가
+                        </button>
+                      ) : (
+                        <button onClick={() => deleteChildren(selectedNodeId)} className="flex-1 bg-white border border-red-200 text-red-500 py-2.5 rounded-lg text-sm font-bold hover:bg-red-50 transition shadow-sm flex items-center justify-center gap-1">
+                          <Trash2 size={16}/> 하위 가지 삭제
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-10 text-slate-400 text-sm border-2 border-dashed border-slate-200 rounded-xl">
+                    오른쪽 트리에서 <br/>노드를 클릭하여 편집하세요.
+                  </div>
+                )}
+              </div>
+              
+              <div className="p-4 border-t border-slate-100 bg-slate-50 text-xs text-slate-500">
+                <div className="font-bold mb-2">도형 아이콘 범례</div>
+                <div className="flex gap-3 justify-center">
+                   <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> 빨강</div>
+                   <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500"></span> 파랑</div>
+                   <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> 노랑</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </aside>
+
+        <section 
+          className="flex-1 overflow-auto bg-slate-50 relative cursor-move" 
+          onClick={() => setSelectedNodeId(null)}
+        >
+          <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
+          <div className="min-w-full min-h-full flex justify-center p-20">
+            <TreeNode nodeId="root" />
+          </div>
+        </section>
+      </main>
+      
+      <style>{`
+        @keyframes fade-in {
+          from { opacity: 0; transform: translateY(5px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+          animation: fade-in 0.3s ease-out forwards;
+        }
+      `}</style>
+    </div>
+  );
+}
