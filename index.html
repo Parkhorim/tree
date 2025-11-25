@@ -35,7 +35,6 @@
         const { useState, useEffect, useRef } = React;
 
         // --- 아이콘 컴포넌트 래퍼 ---
-        // Lucide 아이콘을 React에서 쉽게 쓰기 위한 컴포넌트
         const Icon = ({ name, size = 16, className = "" }) => {
             const iconRef = useRef(null);
             
@@ -85,24 +84,20 @@
         const INITIAL_NODES = {
             'root': { id: 'root', type: 'question', text: '모양이 동그란가요?', yesId: 'n_circle', noId: 'n_not_circle', rule: { key: 'shape', value: 'circle' } },
             
-            // 1. Circle Branch
             'n_circle': { id: 'n_circle', type: 'question', text: '색깔이 빨간색인가요?', parentId: 'root', yesId: 'res_red_circle', noId: 'n_circle_blue', rule: { key: 'color', value: 'red' } },
             'res_red_circle': { id: 'res_red_circle', type: 'result', text: '빨간색 원', parentId: 'n_circle' },
             'n_circle_blue': { id: 'n_circle_blue', type: 'question', text: '색깔이 파란색인가요?', parentId: 'n_circle', yesId: 'res_blue_circle', noId: 'res_yellow_circle', rule: { key: 'color', value: 'blue' } },
             'res_blue_circle': { id: 'res_blue_circle', type: 'result', text: '파란색 원', parentId: 'n_circle_blue' },
             'res_yellow_circle': { id: 'res_yellow_circle', type: 'result', text: '노란색 원', parentId: 'n_circle_blue' },
             
-            // 2. Not Circle Branch
             'n_not_circle': { id: 'n_not_circle', type: 'question', text: '모양이 뾰족한가요? (삼각형)', parentId: 'root', yesId: 'n_tri', noId: 'n_square', rule: { key: 'shape', value: 'triangle' } },
             
-            // 3. Triangle Branch
             'n_tri': { id: 'n_tri', type: 'question', text: '색깔이 노란색인가요?', parentId: 'n_not_circle', yesId: 'res_yellow_tri', noId: 'n_tri_red', rule: { key: 'color', value: 'yellow' } },
             'res_yellow_tri': { id: 'res_yellow_tri', type: 'result', text: '노란색 삼각형', parentId: 'n_tri' },
             'n_tri_red': { id: 'n_tri_red', type: 'question', text: '색깔이 빨간색인가요?', parentId: 'n_tri', yesId: 'res_red_tri', noId: 'res_blue_tri', rule: { key: 'color', value: 'red' } },
             'res_red_tri': { id: 'res_red_tri', type: 'result', text: '빨간색 삼각형', parentId: 'n_tri_red' },
             'res_blue_tri': { id: 'res_blue_tri', type: 'result', text: '파란색 삼각형', parentId: 'n_tri_red' },
 
-            // 4. Square Branch
             'n_square': { 
                 id: 'n_square', type: 'question', text: '색깔이 빨간색인가요?', parentId: 'n_not_circle', 
                 yesId: 'res_red_square', noId: 'n_square_blue', 
@@ -348,38 +343,21 @@
                                 {node.text}
                             </div>
 
-                            {appMode === 'builder' ? (
-                                <div className="w-full pt-2 border-t border-slate-100 mt-1">
-                                    <div className={`flex flex-wrap gap-1 justify-center max-w-[120px] transition-opacity duration-500 ${isAnimating ? 'opacity-50' : 'opacity-100'}`}>
-                                        {shapesAtNode.map(s => (
-                                        <div key={s.id} className="rounded-full transition-transform hover:scale-150">
+                            {/* Data Visualization (Builder & Solver 공통) */}
+                            <div className="w-full pt-2 border-t border-slate-100 mt-1">
+                                <div className={`flex flex-wrap gap-1 justify-center max-w-[120px] transition-opacity duration-500 ${isAnimating ? 'opacity-50' : 'opacity-100'}`}>
+                                    {shapesAtNode.map(s => (
+                                        <div key={s.id} className={`transition-all duration-300 ${appMode === 'solver' && isCurrent ? 'scale-110' : ''}`}>
                                             <ShapeIcon item={s} size={10} />
                                         </div>
-                                        ))}
-                                        {shapesAtNode.length === 0 && <span className="text-[10px] text-slate-300">-</span>}
-                                    </div>
-                                    <div className="text-[10px] text-slate-400 mt-1 text-center flex justify-center items-center gap-1">
-                                        {shapesAtNode.length} items 
-                                        {isResult && isPure && <Icon name="check-circle" size={10} className="text-green-500"/>}
-                                    </div>
+                                    ))}
+                                    {shapesAtNode.length === 0 && <span className="text-[10px] text-slate-300">-</span>}
                                 </div>
-                            ) : (
-                                <div className="w-full pt-2 border-t border-slate-100 mt-1">
-                                    {isResult && isRevealed && isCurrent ? (
-                                        <div className="flex flex-wrap gap-1 justify-center max-w-[120px] animate-pulse">
-                                            {shapesAtNode.map(s => (
-                                                <ShapeIcon key={s.id} item={s} size={12} />
-                                            ))}
-                                            {shapesAtNode.length === 0 && <span className="text-xs text-slate-400">없음</span>}
-                                        </div>
-                                    ) : (
-                                        <div className="flex justify-center items-center gap-1 text-xs font-bold text-slate-400">
-                                            <Icon name="help-circle" size={12} />
-                                            <span>{shapesAtNode.length} candidates</span>
-                                        </div>
-                                    )}
+                                <div className="text-[10px] text-slate-400 mt-1 text-center flex justify-center items-center gap-1">
+                                    <span>{shapesAtNode.length} {appMode === 'builder' ? 'items' : '후보'}</span>
+                                    {isResult && isPure && <Icon name="check-circle" size={10} className="text-green-500"/>}
                                 </div>
-                            )}
+                            </div>
                         </div>
 
                         {node.yesId && node.noId && (
